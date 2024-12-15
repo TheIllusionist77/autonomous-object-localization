@@ -3,7 +3,9 @@ import cv2
 from picamera2 import Picamera2
 from ultralytics import YOLO
 
-model = YOLO("yolov8n.pt")
+old_model = YOLO("yolo11n.pt")
+old_model.export(format="openvino", dynamic = True)
+model = YOLO("yolo11n_openvino_model")
 
 # Invokes YOLO to return the objects found within an image
 def detect_objects(frame, image_size):
