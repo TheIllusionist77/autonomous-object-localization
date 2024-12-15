@@ -60,7 +60,6 @@ def draw_path(path, averaged_objects_locations):
 
     for point in path:
         y_disp, tof, yaw, obj = point
-        print(x, y)
         x += int(y_disp * math.cos(yaw)) / SCALE
         y += int(y_disp * math.sin(yaw)) / SCALE
 
