@@ -1,10 +1,10 @@
-import pygame, os, math, random
+import pygame, os, math, random, time
 
 pygame.init()
 
 WIDTH = 1280
 HEIGHT = 720
-SCALE = 10
+SCALE = 8
 SCREEN = pygame.display.set_mode((WIDTH, HEIGHT))
 
 log_directory = "/Users/sanjitprakash/Downloads"
@@ -17,17 +17,20 @@ def read_file(directory):
                 with open(file_path, "r") as file:
                     return file.readlines()
             except Exception as e:
-                print(f"Error reading file.")
+                print("Error reading file.")
     return None
 
 def parse_data(log_data):
     path = []
-    objects_locations = {}  # Dictionary to store locations for objects
+    objects_locations = {}
+    last_disp = 0
 
     for line in log_data:
         parts = line.strip().split(", ")
         
-        y_disp = float(parts[1])
+        disp = -float(parts[0][1:]) + float(parts[1]) + float(parts[2]) - last_disp
+        last_disp = disp + last_disp
+
         yaw = float(parts[3])
         tof_reading = float(parts[4])
         if parts[5][:-1] != "None":
@@ -35,46 +38,69 @@ def parse_data(log_data):
         else:
             object = None
 
-        path.append((y_disp, yaw, tof_reading, object))
+        path.append((disp, tof_reading, yaw, object))
         
         if object != None and object not in objects_locations:
             objects_locations[object] = []
-            objects_locations[object].append((y_disp, yaw, tof_reading))
+            objects_locations[object].append([disp, yaw, tof_reading])
+        elif object in objects_locations:
+            objects_locations[object].append([disp, yaw, tof_reading])
 
-    averaged_objects_locations = {}
-    for obj, locations in objects_locations.items():
-        avg_x, avg_y = 0, 0
-        for loc in locations:
-            y_disp, yaw, tof = loc
-            avg_x += int(tof * math.cos(yaw)) / SCALE
-            avg_y += int(tof * math.sin(yaw)) / SCALE
+    objects = {}
+    for object in objects_locations:
+        object_x, object_y = 0, 0
+        count = 0
 
-        averaged_objects_locations[obj] = (avg_x / len(locations), avg_y / len(locations))
+        for each in objects_locations[object]:
+            count += 1
+            disp, tof, yaw = each
+
+            yaw *= -1
+
+            if count == 1:
+                initial_angle = yaw - 90
+
+            yaw -= initial_angle
+
+            object_x += (disp + int(-tof / 3.4 * math.cos(yaw))) * SCALE
+            object_y += (disp + int(-tof / 3.4 * math.sin(yaw))) * SCALE
+
+        object_x /= count
+        object_y /= count
+        objects[object] = object_x, object_y
     
-    return path, averaged_objects_locations
+    return path, objects
 
-def draw_path(path, averaged_objects_locations):
-    SCREEN.fill((0, 0, 0))
-
-    x, y = WIDTH / 4, HEIGHT / 4
+def draw_path(path, objects):
+    SCREEN.fill((255, 255, 255))
+    x, y = WIDTH / 2, HEIGHT / 2
+    count = 0
 
     for point in path:
-        y_disp, tof, yaw, obj = point
-        x += int(y_disp * math.cos(yaw)) / SCALE
-        y += int(y_disp * math.sin(yaw)) / SCALE
+        count += 1
+        disp, tof, yaw, obj = point
+        yaw *= -1
 
-        pygame.draw.circle(SCREEN, (0, 0, 255), (x, y), 1)
+        if count == 1:
+            initial_angle = yaw - 90
 
-    for obj, (avg_x, avg_y) in averaged_objects_locations.items():
-        object_x = x + int(avg_x * math.cos(yaw))
-        object_y = y + int(avg_y * math.sin(yaw))
+        yaw -= initial_angle
+        
+        x += float(disp * math.cos(math.radians(yaw))) * SCALE
+        y += float(disp * math.sin(math.radians(yaw))) * SCALE
 
+        pygame.draw.circle(SCREEN, (0, min(255, count), 255), (x, y), 1)
+        pygame.display.update()
+
+    for object in objects:
+        object_x, object_y = objects[object]
         color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
-        pygame.draw.circle(SCREEN, color, (object_x, object_y), 5)
+        pygame.draw.circle(SCREEN, color, (WIDTH / 2 + object_x, HEIGHT / 2 + object_y), 5)
 
         font = pygame.font.SysFont("Arial", 12)
-        text = font.render(obj, True, color)
-        SCREEN.blit(text, (object_x + 10, object_y - 15))
+        text = font.render(object, True, color)
+        SCREEN.blit(text, (WIDTH / 2 + object_x + 10, HEIGHT / 2 + object_y - 15))
+        pygame.display.update()
 
 log_data = read_file(log_directory)
 
@@ -82,15 +108,17 @@ if log_data is None:
     print("No log files found.")
     running = False
 else:
-    path, averaged_objects_locations = parse_data(log_data)
+    path, objects = parse_data(log_data)
     running = True
 
-draw_path(path, averaged_objects_locations)
-pygame.display.update()
-
+drawn = False
 while running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
+
+    if not drawn:
+        draw_path(path, objects)
+        drawn = True
 
 pygame.quit()
