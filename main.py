@@ -1,5 +1,5 @@
 # Importing the neccesary modules
-import cv2, os
+import cv2, os, datetime
 import numpy as np
 
 from picamera2 import Picamera2
@@ -26,10 +26,13 @@ start_rotation = np.identity(3)
 start_pose = np.concatenate((start_rotation, start_translation), axis = 1)
 
 RED = (255, 0, 0)
+CAMERA_FOV = 107
+SCREEN_SIZE = 640
+SAVE_FILE = "odometry_logs/log" + str(datetime.datetime.now().strftime("%m%d%y-%H%M%S"))
 
 # Initializing the camera stream
 picam2 = Picamera2()
-picam2.configure(picam2.create_preview_configuration(main = {"format": "RGB888", "size": (640, 480)}))
+picam2.configure(picam2.create_preview_configuration(main = {"format": "RGB888", "size": (SCREEN_SIZE, SCREEN_SIZE)}))
 picam2.start()
 
 # Allows us to convert degrees to region of interest area and vice versa
@@ -42,9 +45,9 @@ def conversion(degrees = None, area = None):
 # Returns the ratio of the camera view that the ToF ROI covers and vice versa
 def distance_fov(degrees = None, area = None):
     if degrees != None:
-        return math.tan(math.radians(degrees / 2)) / math.sqrt(3)
+        return (degrees ** 2) / (CAMERA_FOV ** 2)
     if area != None:
-        return math.degrees(2 * math.atan(math.sqrt(3) * area))
+        return CAMERA_FOV * math.sqrt(area)
 
 # Returns if any one of two given rects encompass the other
 def check_containment(delta_x1, delta_y1, delta_x2, delta_y2, center_x1, center_y1, center_x2, center_y2):
@@ -78,14 +81,14 @@ def calculate_tof_region(x1, y1, x2, y2):
     max_area = max_grid_size ** 2
     max_degrees = conversion(area=max_area)
     max_fov_ratio = distance_fov(max_degrees)
-    max_fov_pixel_width = max_fov_ratio * 640
-    max_fov_pixel_height = max_fov_ratio * 480
+    max_fov_pixel_width = max_fov_ratio * SCREEN_SIZE
+    max_fov_pixel_height = max_fov_ratio * SCREEN_SIZE
 
     # Find the portion of the bounding box within the ToF 16x16 field of view
-    tof_fov_x1 = 640 / 2 - max_fov_pixel_width / 2
-    tof_fov_y1 = 480 / 2 - max_fov_pixel_height / 2
-    tof_fov_x2 = 640 / 2 + max_fov_pixel_width / 2
-    tof_fov_y2 = 480 / 2 + max_fov_pixel_height / 2
+    tof_fov_x1 = SCREEN_SIZE / 2 - max_fov_pixel_width / 2
+    tof_fov_y1 = SCREEN_SIZE / 2 - max_fov_pixel_height / 2
+    tof_fov_x2 = SCREEN_SIZE / 2 + max_fov_pixel_width / 2
+    tof_fov_y2 = SCREEN_SIZE / 2 + max_fov_pixel_height / 2
 
     overlap_x1 = max(x1, tof_fov_x1)
     overlap_y1 = max(y1, tof_fov_y1)
@@ -104,8 +107,8 @@ def calculate_tof_region(x1, y1, x2, y2):
         area = grid_size ** 2
         degrees = conversion(area=area)
         fov_ratio = distance_fov(degrees)
-        fov_pixel_width = fov_ratio * 640
-        fov_pixel_height = fov_ratio * 480
+        fov_pixel_width = fov_ratio * SCREEN_SIZE
+        fov_pixel_height = fov_ratio * SCREEN_SIZE
 
         # Check if this grid size fits within the overlap box
         if fov_pixel_width <= overlap_width and fov_pixel_height <= overlap_height:
@@ -115,7 +118,7 @@ def calculate_tof_region(x1, y1, x2, y2):
 
             # Convert ToF center in pixels to 16x16 grid
             screen_area = overlap_width * overlap_height
-            grid_degrees = distance_fov(area = (screen_area / (open_cv_width * open_cv_height)))
+            grid_degrees = distance_fov(area = (screen_area / (SCREEN_SIZE * SCREEN_SIZE)))
             grid_area = conversion(degrees = grid_degrees)
             grid_x = round(math.sqrt(grid_area))
             grid_y = round(math.sqrt(grid_area))
@@ -136,11 +139,8 @@ frame_counter = 0
 running = True
 
 cur_pose = start_pose
-x, y, z = 0, 0, 0
-distance, yaw = 0, 0
-
-open_cv_width = 640
-open_cv_height = 480
+x, y, disp_x, disp_y = 0, 0, 0, 0
+distance, yaw, last_x, last_y = 0, 0, 0, 0
 
 delta_x1 = 0
 delta_y1 = 0
@@ -173,12 +173,14 @@ roi_index = {
 
 roi_xy = (16, 16)
 roi_center = 199
+
+raw_x, raw_y, raw_z = 0, 0, 0
   
 # Main system loop
 while running:
     # Capturing an image from the camera
     new_frame = picam2.capture_array()
-    new_frame = new_frame[0:open_cv_height, 0:open_cv_width]
+    new_frame = new_frame[0:SCREEN_SIZE, 0:SCREEN_SIZE]
     frame_counter += 1
     start = time.perf_counter()
     
@@ -196,18 +198,30 @@ while running:
         camera_pose_list.append(hom_camera_pose)
         estimated_path.append((cur_pose[0, 3], cur_pose[2, 3]))
         
-        x, y, z = cur_pose[0, 3], cur_pose[2, 3], cur_pose[1, 3]
+        raw_x, raw_y = cur_pose[0, 3], cur_pose[2, 3]
+        
+        disp_x = abs(raw_x) - last_x
+        last_x += disp_x
+        disp_y = abs(raw_y) - last_y
+        last_y += disp_y
+        
     elif process_frames and ret is False:
         break
     
     # Using YOLO to find objects within the image
-    annotated_frame, objects = detect_objects(new_frame, 160)
+    annotated_frame, objects = detect_objects(new_frame, 320)
     
     # Invoking the sensors to return distance and yaw
     sensor_data = get_data()
     if sensor_data != None:
         if None not in sensor_data:
             distance, yaw, _, _ = sensor_data
+            
+    # Calculating true (x, y) coordinates
+    x += disp_x * math.cos(math.radians(yaw)) + disp_y * math.sin(math.radians(yaw))
+    y += disp_x * math.sin(math.radians(yaw)) + disp_y * math.cos(math.radians(yaw))
+    
+    print(round(disp_x), round(disp_y))
             
     # Checking if there are any objects within the original ToF ROI
     for item in objects:
@@ -229,10 +243,20 @@ while running:
     
     # Computing the ToF ROI and writing it to the camera stream
     ratio = distance_fov(degrees = conversion(area = roi_xy[0] * roi_xy[1]))
-    center_x1 = int((open_cv_width / 2) - (ratio * open_cv_width / 2))
-    center_y1 = int((open_cv_height / 2) - (ratio * open_cv_height / 2)) - 32
-    center_x2 = int((open_cv_width / 2) + (ratio * open_cv_width / 2))
-    center_y2 = int((open_cv_height / 2) + (ratio * open_cv_height / 2)) - 32
+    
+    tof_fov_rad = math.radians(CAMERA_FOV)
+    cam_fov_rad = math.radians(conversion(area = roi_xy[0] * roi_xy[1]))
+
+    angular_offset_rad = math.atan(2.0 / (max(distance, 1)))
+
+    camera_center_offset_rad = angular_offset_rad
+    cam_pixels_per_radian = SCREEN_SIZE / cam_fov_rad
+    pixel_offset = int(camera_center_offset_rad * cam_pixels_per_radian)
+
+    center_x1 = int((SCREEN_SIZE / 2) - (ratio * SCREEN_SIZE / 2))
+    center_y1 = int((SCREEN_SIZE / 2) - (ratio * SCREEN_SIZE / 2)) - pixel_offset
+    center_x2 = int((SCREEN_SIZE / 2) + (ratio * SCREEN_SIZE / 2))
+    center_y2 = int((SCREEN_SIZE / 2) + (ratio * SCREEN_SIZE / 2)) - pixel_offset
     
     cv2.rectangle(annotated_frame, (center_x1, center_y1), (center_x2, center_y2), RED, 1)
     
@@ -247,11 +271,11 @@ while running:
     cv2.putText(annotated_frame, f"FPS: {round(fps)}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
     cv2.putText(annotated_frame, f"X: {round(x)}", (500, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 1)
     cv2.putText(annotated_frame, f"Y: {round(y)}", (500, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 1)
-    cv2.putText(annotated_frame, f"Z: {round(z)}", (500, 130), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 1)
-    cv2.putText(annotated_frame, f"D: {round(distance)}", (500, 170), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 1)
+    cv2.putText(annotated_frame, f"D: {round(distance)}", (500, 130), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 1)
+    cv2.putText(annotated_frame, f"A: {round(yaw)}", (500, 170), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 1)
     
     cv2.imshow("Localization and Object Detection", annotated_frame)
     cv2.waitKey(5)
     
 # Cleaning up OpenCV
-cv2.destroyAllWindows() 
+cv2.destroyAllWindows()
