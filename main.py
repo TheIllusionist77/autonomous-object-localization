@@ -1,6 +1,7 @@
 # Importing the neccesary modules
-import cv2, os, datetime
+import cv2, os, datetime, threading, pyttsx3, queue
 import numpy as np
+import speech_recognition as sr
 
 from picamera2 import Picamera2
 from visual_odometry import *
@@ -20,6 +21,10 @@ vo = CameraPoses(data_dir, skip_frames, intrinsic)
 gt_path = []
 estimated_path = []
 camera_pose_list = []
+
+global object_locations
+object_locations = {}
+
 start_pose = np.ones((3, 4))
 start_translation = np.zeros((3, 1))
 start_rotation = np.identity(3)
@@ -28,12 +33,74 @@ start_pose = np.concatenate((start_rotation, start_translation), axis = 1)
 RED = (255, 0, 0)
 CAMERA_FOV = 107
 SCREEN_SIZE = 640
-SAVE_FILE = "odometry_logs/log" + str(datetime.datetime.now().strftime("%m%d%y-%H%M%S"))
+SAVE_FILE = "odometry_logs/odometry_log" + str(datetime.datetime.now().strftime("%m%d%y-%H%M%S")) + ".txt"
 
 # Initializing the camera stream
 picam2 = Picamera2()
 picam2.configure(picam2.create_preview_configuration(main = {"format": "RGB888", "size": (SCREEN_SIZE, SCREEN_SIZE)}))
 picam2.start()
+
+# Initializing the speech recognition and speaker
+recognizer = sr.Recognizer()
+speaker = pyttsx3.init()
+speaker.setProperty("rate", 125)
+audio_queue = queue.Queue()
+can_speak = True
+    
+# Function to speak text asynchronously
+def speak(text):
+    def speak_thread():
+        print("Positioning and speaking...")
+        print(text)
+        if "where" or "location" in text:
+            for obj in object_locations:
+                if obj in text:
+                    can_speak = False
+                    obj_x, obj_y = round(object_locations[obj][0]), round(object_locations[obj][1])
+                    distance = round((math.sqrt((obj_x - x) ** 2 + (obj_y - y) ** 2) / 10))
+                    print(math.atan(math.radians((obj_y - y) / max(obj_x - x, 1))))
+                    angle = round(math.degrees(math.atan(math.radians((obj_y - y) / (obj_x - x)))))
+                    print("Keyword and object found and matched: ", distance, angle)
+                    output = "You left your ", obj, distance, " meters away ", angle, " degrees from your current heading"
+                    speaker.say(output)
+                    can_speak = True
+        else:
+            speaker.say("Sorry, no valid query was found.")
+        speaker.runAndWait()
+    
+    # Create and start a new thread for speaking
+    thread = threading.Thread(target = speak_thread, daemon = True)
+    thread.start()
+    
+# Function to capture audio (runs in the main thread)
+def listen():
+    with sr.Microphone() as mic:
+        while True:
+            try:
+                print("Listening...")
+                recognizer.adjust_for_ambient_noise(mic)
+                audio = recognizer.listen(mic)
+                if can_speak == True:
+                    print("Recorded audio. Moving to recognition thread...")
+                    audio_queue.put(audio)  # Add audio to queue for processing
+            except Exception as e:
+                print(f"Error capturing audio: {e}")
+
+# Function to process audio (runs in a separate thread)
+def recognize_audio():
+    while True:
+        try:
+            # Get audio from the queue
+            audio = audio_queue.get()
+            print("Recognizing...")
+            text = recognizer.recognize_sphinx(audio)
+            print(f"Recognized: {text}")
+            speak(text)
+            
+        except sr.UnknownValueError:
+            print("Speech could not be understood.")
+        except Exception as e:
+            print(f"Recognition error: {e}")
 
 # Allows us to convert degrees to region of interest area and vice versa
 def conversion(degrees = None, area = None):
@@ -137,6 +204,7 @@ old_frame = None
 new_frame = None
 frame_counter = 0
 running = True
+save = True
 
 cur_pose = start_pose
 x, y, disp_x, disp_y = 0, 0, 0, 0
@@ -175,7 +243,13 @@ roi_xy = (16, 16)
 roi_center = 199
 
 raw_x, raw_y, raw_z = 0, 0, 0
-  
+
+thread1 = threading.Thread(target = listen, daemon = True)
+thread1.start()
+
+thread2 = threading.Thread(target = recognize_audio, daemon = True)
+thread2.start()
+
 # Main system loop
 while running:
     # Capturing an image from the camera
@@ -216,13 +290,12 @@ while running:
     if sensor_data != None:
         if None not in sensor_data:
             distance, yaw, _, _ = sensor_data
+            yaw += 180
             
     # Calculating true (x, y) coordinates
     x += disp_x * math.cos(math.radians(yaw)) + disp_y * math.sin(math.radians(yaw))
     y += disp_x * math.sin(math.radians(yaw)) + disp_y * math.cos(math.radians(yaw))
-    
-    print(round(disp_x), round(disp_y))
-            
+                
     # Checking if there are any objects within the original ToF ROI
     for item in objects:
         delta_x1 = item["BBox"][0]
@@ -231,8 +304,8 @@ while running:
         delta_y2 = item["BBox"][3]
         
         if check_containment(delta_x1, delta_y1, delta_x2, delta_y2, center_x1, center_y1, center_x2, center_y2):
-            print(item["Class"])
-            
+            if not any(item["Class"] for obj in object_locations):
+                 object_locations[item["Class"]] = (x, y, datetime.datetime.now())     
         break
     
     new_roi = calculate_tof_region(delta_x1, delta_y1, delta_x2, delta_y2)
@@ -260,13 +333,30 @@ while running:
     
     cv2.rectangle(annotated_frame, (center_x1, center_y1), (center_x2, center_y2), RED, 1)
     
+    # Calculating the frame rate
     old_frame = new_frame
     process_frames = True
     end = time.perf_counter()
     
     total_time = end - start
     fps = 1 / total_time
-    
+        
+    # Saving data for later analysis if needed
+    if save == True:
+        try:
+            with open(SAVE_FILE, "r") as file:
+                lines = file.readlines()
+                if lines:
+                    lines = lines[:-1]
+            with open(SAVE_FILE, "w") as file:
+                file.writelines(lines)
+        except:
+            pass
+        
+        with open(SAVE_FILE, "a") as file:
+            file.write(str((x, y)) + "\n")
+            file.write(str(repr(object_locations)))
+            
     # Writing text to the camera stream
     cv2.putText(annotated_frame, f"FPS: {round(fps)}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
     cv2.putText(annotated_frame, f"X: {round(x)}", (500, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 1)
