@@ -15,6 +15,7 @@ with open("intrinsic.npy", "rb") as f:
 
 # Defining some variables and lists
 skip_frames = 2
+pixel_offset = 0
 data_dir = ""
 vo = CameraPoses(data_dir, skip_frames, intrinsic)
 
@@ -51,7 +52,6 @@ can_speak = True
 def speak(text):
     def speak_thread():
         print("Positioning and speaking...")
-        print(text)
         if "where" or "location" in text:
             for obj in object_locations:
                 if obj in text:
@@ -304,7 +304,7 @@ while running:
         delta_y2 = item["BBox"][3]
         
         if check_containment(delta_x1, delta_y1, delta_x2, delta_y2, center_x1, center_y1, center_x2, center_y2):
-            if not any(item["Class"] for obj in object_locations):
+            if not any(obj[0] == item["Class"] for object in object_locations):
                  object_locations[item["Class"]] = (x, y, datetime.datetime.now())     
         break
     
@@ -327,9 +327,9 @@ while running:
     pixel_offset = int(camera_center_offset_rad * cam_pixels_per_radian)
 
     center_x1 = int((SCREEN_SIZE / 2) - (ratio * SCREEN_SIZE / 2))
-    center_y1 = int((SCREEN_SIZE / 2) - (ratio * SCREEN_SIZE / 2)) - pixel_offset
+    center_y1 = int((SCREEN_SIZE / 2) - (ratio * SCREEN_SIZE / 2))
     center_x2 = int((SCREEN_SIZE / 2) + (ratio * SCREEN_SIZE / 2))
-    center_y2 = int((SCREEN_SIZE / 2) + (ratio * SCREEN_SIZE / 2)) - pixel_offset
+    center_y2 = int((SCREEN_SIZE / 2) + (ratio * SCREEN_SIZE / 2))
     
     cv2.rectangle(annotated_frame, (center_x1, center_y1), (center_x2, center_y2), RED, 1)
     
